@@ -1,0 +1,154 @@
+# backend/scripts/panoptic_to_pointcloud.py
+
+import os
+import re
+import json
+import numpy as np
+import open3d as o3d
+from PIL import Image, ImageDraw
+
+
+def run_panoptic_to_pointcloud(
+    panoptic_dir,
+    lidar_dir,
+    output_dir,
+    K,
+    T_LIDAR_TO_CAM,
+    width,
+    height,
+    category_base_colors,
+    thing_class_ids
+):
+    os.makedirs(output_dir, exist_ok=True)
+
+    def panoptic_color(category_id, instance_id):
+        base = np.array(category_base_colors.get(category_id, (255,255,255)))
+        if category_id not in thing_class_ids or instance_id == 0:
+            return base.astype(np.uint8)
+        rng = np.random.RandomState(category_id * 1000 + instance_id)
+        noise = rng.randint(-35, 35, 3)
+        return np.clip(base + noise, 0, 255).astype(np.uint8)
+
+    def extract_timestamp(name):
+        m = re.match(r"(\d+\.\d+)_gtFine_panoptic\.json", name)
+        return m.group(1) if m else None
+
+    def normalize_polygon(poly):
+        """
+        支持各种嵌套格式：
+        - [[x,y], ...]
+        - [[[x,y], ...]]
+        - [[[[x,y], ...]]]
+        最终输出: [(x,y), (x,y), ...]
+        """
+        # 一直剥外层，直到元素看起来像 [x, y]
+        while isinstance(poly, list) and len(poly) > 0:
+            first = poly[0]
+            # 目标形态：first 是 [number, number]
+            if isinstance(first, (list, tuple)) and len(first) == 2 and all(
+                isinstance(v, (int, float, np.integer, np.floating)) for v in first
+            ):
+                break
+            # 否则继续降一层
+            poly = first
+
+        # 现在 poly 应该是 [[x,y], ...]
+        pts = []
+        for p in poly:
+            # 有些数据点会是 [[x,y]]，再剥一次
+            while isinstance(p, list) and len(p) == 1 and isinstance(p[0], list):
+                p = p[0]
+            if not (isinstance(p, (list, tuple)) and len(p) == 2):
+                continue
+            x, y = p
+            pts.append((int(x), int(y)))
+
+        return pts
+
+    json_files = sorted(
+        f for f in os.listdir(panoptic_dir)
+        if f.endswith("_gtFine_panoptic.json")
+    )
+
+    for fname in json_files:
+        ts = extract_timestamp(fname)
+        if ts is None:
+            continue
+
+        pcd_path = os.path.join(lidar_dir, f"{ts}.pcd")
+        if not os.path.exists(pcd_path):
+            print(f"[Skip] missing {pcd_path}")
+            continue
+
+        print(f"[PC] Processing {ts}")
+
+        # ---------- 读点云 ----------
+        pcd = o3d.io.read_point_cloud(pcd_path)
+        points = np.asarray(pcd.points)
+        N = points.shape[0]
+
+        point_cat = np.zeros(N, dtype=np.int16)
+        point_inst = np.zeros(N, dtype=np.int16)
+        colors = np.zeros((N,3), dtype=np.uint8)
+
+        # ---------- 投影 ----------
+        pts_h = np.hstack([points, np.ones((N,1))])
+        cam = (T_LIDAR_TO_CAM @ pts_h.T).T
+        Z = cam[:,2]
+        valid = Z > 0
+
+        X, Y, Z = cam[valid,0], cam[valid,1], cam[valid,2]
+        u = (K[0,0]*X/Z + K[0,2]).astype(np.int32)
+        v = (K[1,1]*Y/Z + K[1,2]).astype(np.int32)
+
+        valid_idx = np.where(valid)[0]
+
+        # ---------- 读 JSON ----------
+        with open(os.path.join(panoptic_dir, fname), "r") as f:
+            pano = json.load(f)
+
+        # 需要一张“画布”大小（从 config 或 image 推导更好）
+        # 这里假设你知道 image 尺寸，或者从 config 取
+        # 示例：1920x1080
+        H, W = height, width
+
+        # ---------- 遍历每个 segment ----------
+        for seg in pano["segments_info"]:
+            class_id = int(seg["class_id"])
+            isthing = seg.get("isthing", False)
+            instance_id = seg["id"] if isthing else 0
+
+            # polygon → mask
+            mask = Image.new("L", (W, H), 0)
+            draw = ImageDraw.Draw(mask)
+
+            #print(seg["polygon"])
+
+            poly = normalize_polygon(seg["polygon"])
+            if len(poly) < 3:
+                continue
+            draw.polygon(poly, outline=1, fill=1)
+
+
+            mask = np.array(mask, dtype=bool)
+
+            # 判断投影点是否落在 mask 中
+            for i_img, uu, vv in zip(valid_idx, u, v):
+                if 0 <= uu < W and 0 <= vv < H and mask[vv, uu]:
+                    point_cat[i_img] = class_id
+                    point_inst[i_img] = instance_id
+                    colors[i_img] = panoptic_color(class_id, instance_id)
+
+        # ---------- 保存 ----------
+        label_data = np.hstack([
+            points,
+            point_cat[:,None],
+            point_inst[:,None]
+        ])
+
+        np.save(os.path.join(output_dir, f"{ts}_labels.npy"), label_data)
+
+        pcd.colors = o3d.utility.Vector3dVector(colors / 255.0)
+        # o3d.visualization.draw_geometries([pcd])
+
+    return {"status": "ok", "frames": len(json_files)}

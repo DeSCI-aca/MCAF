@@ -1,0 +1,3 @@
+backend/weights/*.pth
+backend/weights/*.pt
+__pycache__/

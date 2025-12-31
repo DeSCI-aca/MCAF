@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>图像标注</title>
+  <link rel="stylesheet" href="../styles.css" />
+</head>
+
+<body>
+
+<div class="annotation-container">
+
+  <div
+  class="top-toolbar"
+  style="
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 12px;
+  "
+  >
+    <button class="tool-btn" onclick="nav('/')" title="返回首页">🏠</button>
+
+    <span style="opacity:0.4;">|</span>
+
+    <button class="tool-btn active" id="btnCursor">🖱️ 选择</button>
+    <button class="tool-btn" id="btnPolygon">⬢ 多边形</button>
+    <button class="tool-btn" id="btnHighlight">🔍 查漏</button>
+
+    <span style="margin-left:auto;" id="currentFileName">加载中...</span>
+  </div>
+
+
+  <!-- ================= 顶部工具栏 ================= -->
+  <div class="toolbar" style="margin-bottom:16px;">
+    <button class="btn" onclick="nav('/')">← 返回</button>
+    <span id="currentFileName" style="margin-left:16px;">加载中...</span>
+    <button class="tool-btn" id="btnSaveNext">💾 Save & Next</button>
+  </div>
+
+  <!-- ================= 主标注区（左右布局） ================= -->
+  <div
+    class="annotation-row"
+    style="
+      display: flex;
+      gap: 24px;
+      align-items: flex-start;
+    "
+  >
+
+    <!-- ================= 左侧：SAM 自动分割 ================= -->
+    <div
+      class="image-wrapper"
+      style="position: relative; display: inline-block;"
+    >
+      <!-- 原图 -->
+      <img
+        id="baseImage"
+        style="display:block; max-width:800px;"
+      />
+
+      <!-- SAM overlay -->
+      <img
+        id="segOverlay"
+        style="
+          position:absolute;
+          top:0; left:0;
+          width:100%;
+          height:100%;
+          opacity:0.5;
+          pointer-events:none;
+        "
+      />
+
+      <!-- SAM / Polygon 共用绘制层（左侧暂只用于点击） -->
+      <canvas
+        id="draw-polygon"
+        style="
+          position:absolute;
+          top:0; left:0;
+          pointer-events:auto;
+        "
+      ></canvas>
+    </div>
+
+    <!-- ================= 右侧：Polygon 精修 ================= -->
+    <div
+      id="polygonPanel"
+      style="
+        position: relative;
+        display: block;
+        width: 800px;
+      "
+    >
+      <img
+        id="polygonImage"
+        style="display:block; width:100%;"
+      />
+    
+      <canvas
+        id="polygonCanvas"
+        style="
+          position:absolute;
+          top:0;
+          left:0;
+          width:100%;
+          height:100%;
+          background: rgba(255,0,0,0.25); /* 👈 红色测试层 */
+          z-index: 10;
+          pointer-events: auto;
+        "
+      ></canvas>
+    </div>
+  
+
+  </div>
+
+  <!-- ================= 下方：结果展示 ================= -->
+  <div
+    style="
+      display:flex;
+      gap:24px;
+      align-items:flex-start;
+      margin-top: 20px;
+    "
+  >
+    <div style="margin-top:20px;">
+      <h4>🧪 标注结果预览</h4>
+      <img
+        id="samResultImage"
+        style="
+          display:none;
+          max-width:800px;
+          border:1px solid #333;
+          margin-top:8px;
+        "
+      />
+    </div>
+
+    <div style="margin-top:20px;">
+      <h4>🧪 标注结果预览</h4>
+      <img
+        id="polygonResultImage"
+        style="
+          display:none;
+          max-width:800px;
+          border:1px solid #333;
+          margin-top:8px;
+        "
+      />
+    </div>
+  </div>
+
+</div>
+<!-- ================= 右侧：已标注列表 ================= -->
+<div
+  id="labelListPanel"
+  style="
+    position: fixed;
+    top: 80px;
+    right: 16px;
+    width: 260px;
+    background: #1a1d23;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 8px;
+    padding: 12px;
+    max-height: 80vh;
+    overflow-y: auto;
+  "
+>
+  <div
+    class="label-panel-title"
+    style="font-weight:bold; margin-bottom:8px;"
+  >
+    🧩 已标注
+  </div>
+  <ul
+    id="labelList"
+    style="list-style:none; padding:0; margin:0;"
+  ></ul>
+</div>
+
+</body>
+</html>
