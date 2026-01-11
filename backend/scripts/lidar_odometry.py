@@ -3,6 +3,9 @@ import os
 import numpy as np
 import open3d as o3d
 
+import cv2
+from scripts.project_color_from_image import project_color_to_points
+
 # =======================
 # 颜色表
 # =======================
@@ -32,7 +35,6 @@ def color_from_cat_inst(cat_id, inst_id):
     color = np.clip(base + noise, 0, 255)
     return color / 255.0
 
-
 # =======================
 # 工具函数
 # =======================
@@ -45,20 +47,23 @@ def copy_pointcloud(pcd):
         p.normals = o3d.utility.Vector3dVector(np.asarray(pcd.normals))
     return p
 
-
 # =======================
 # 加载 npy 点云 + 元数据
 # =======================
-def load_pcd_from_npy(npy_path):
+def load_pcd_from_npy(
+    npy_path
+):
     data = np.load(npy_path)
 
     pts = data[:, :3]
     cat_ids = data[:, 3].astype(int)
     inst_ids = data[:, 4].astype(int)
-
-    colors = np.zeros((len(pts), 3))
-    for i in range(len(pts)):
-        colors[i] = color_from_cat_inst(cat_ids[i], inst_ids[i])
+    colors = data[:, 5:]
+    use_cat = False
+    if use_cat:
+        colors = np.zeros((len(pts), 3))
+        for i in range(len(pts)):
+            colors[i] = color_from_cat_inst(cat_ids[i], inst_ids[i])
 
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(pts)
@@ -69,7 +74,6 @@ def load_pcd_from_npy(npy_path):
         "inst": inst_ids
     }
     return pcd, meta
-
 
 # =======================
 # 特征提取
@@ -97,7 +101,6 @@ def extract_features(pcd, k=20, edge_thresh=0.12, plane_thresh=0.01):
 
     return edge, plane
 
-
 # =======================
 # ICP 配准
 # =======================
@@ -124,11 +127,10 @@ def register_features(src_edge, src_plane, tgt_edge, tgt_plane, init=np.eye(4)):
     )
     return result.transformation
 
-
 # =======================
 # LiDAR 里程计
 # =======================
-def lidar_odometry(npy_dir, files):
+def lidar_odometry(npy_dir, files, image_dir, K, T_LIDAR_TO_CAM):
     poses = [np.eye(4)]
     pcd_cache = []
     meta_cache = []
@@ -137,7 +139,12 @@ def lidar_odometry(npy_dir, files):
     T_world = np.eye(4)
 
     for i, f in enumerate(files):
-        pcd, meta = load_pcd_from_npy(os.path.join(npy_dir, f))
+        npy_path = os.path.join(npy_dir, f)
+
+        pcd, meta = load_pcd_from_npy(
+            npy_path
+        )
+
         edge, plane = extract_features(pcd)
 
         if prev_edge is not None:
@@ -189,56 +196,114 @@ def save_global_map_and_meta(global_map, global_meta, out_dir):
     print(f"[Saved] PointCloud -> {pcd_path}")
 
     # ========= 2. 保存元数据 =========
-    meta_path = os.path.join(out_dir, "global_meta.npz")
-    np.savez(
-        meta_path,
-        frame=global_meta["frame"],
-        cat=global_meta["cat"],
-        inst=global_meta["inst"]
-    )
-    print(f"[Saved] Meta -> {meta_path}")
-
+    # meta_path = os.path.join(out_dir, "global_meta.npz")
+    # np.savez(
+    #     meta_path,
+    #     frame=global_meta["frame"],
+    #     cat=global_meta["cat"],
+    #     inst=global_meta["inst"]
+    # )
+    # print(f"[Saved] Meta -> {meta_path}")
     # ========= 3. 可选：保存为一个大 npy（方便训练） =========
     pts = np.asarray(global_map.points)
     cols = np.asarray(global_map.colors)
 
     merged = np.concatenate([
         pts,
+        global_meta["cat"][:, None],
+        global_meta["inst"][:, None],
         cols,
         global_meta["frame"][:, None],
-        global_meta["cat"][:, None],
-        global_meta["inst"][:, None]
     ], axis=1)
 
     merged_path = os.path.join(out_dir, "global_map_with_meta.npy")
     np.save(merged_path, merged)
     print(f"[Saved] Merged npy -> {merged_path}")
 
+def save_chunked_maps(
+    pcd_list,
+    meta_list,
+    poses,
+    out_dir,
+    chunk_size=20
+):
+    chunks_dir = os.path.join(out_dir, "chunks")
+    os.makedirs(chunks_dir, exist_ok=True)
+
+    num_frames = len(pcd_list)
+
+    for start in range(0, num_frames, chunk_size):
+        end = min(start + chunk_size, num_frames)
+
+        chunk_name = f"chunk_{start:03d}_{end-1:03d}"
+        chunk_out = os.path.join(chunks_dir, chunk_name)
+        os.makedirs(chunk_out, exist_ok=True)
+
+        print(f"[Chunk] {chunk_name}")
+
+        # ⚠️ 切片
+        chunk_pcds  = pcd_list[start:end]
+        chunk_metas = meta_list[start:end]
+        chunk_poses = poses[start:end]
+
+        # === 以该 chunk 最后一帧为参考 ===
+        global_map, global_meta = build_map_to_last_frame(
+            chunk_pcds,
+            chunk_metas,
+            chunk_poses
+        )
+
+        # === 复用你已有的保存逻辑 ===
+        save_global_map_and_meta(global_map, global_meta, chunk_out)
+
+        # 保存该 chunk 的 poses（相对于 chunk 最后一帧）
+        np.save(
+            os.path.join(chunk_out, "lidar_poses.npy"),
+            np.stack(chunk_poses)
+        )
+
 
 def run_lidar_odometry(
     npy_dir,
     output_dir,
-    max_frames=None
+    image_dir,
+    K,
+    T,
+    max_frames=None,
+    chunk_size=20
 ):
+
     files = sorted(f for f in os.listdir(npy_dir) if f.endswith("_labels.npy"))
     if max_frames:
         files = files[:max_frames]
 
-    poses, pcd_list, meta_list = lidar_odometry(npy_dir, files)
+    poses, pcd_list, meta_list = lidar_odometry(npy_dir, files, image_dir, K, T)
+
+    global_out = os.path.join(output_dir, "global_merged")
+    os.makedirs(global_out, exist_ok=True)
 
     global_map, global_meta = build_map_to_last_frame(
         pcd_list, meta_list, poses
     )
 
-    save_global_map_and_meta(global_map, global_meta, output_dir)
+    save_global_map_and_meta(global_map, global_meta, global_out)
 
     np.save(
-        os.path.join(output_dir, "lidar_poses.npy"),
+        os.path.join(global_out, "lidar_poses.npy"),
         np.stack(poses)
+    )
+
+    save_chunked_maps(
+        pcd_list,
+        meta_list,
+        poses,
+        output_dir,
+        chunk_size=chunk_size
     )
 
     return {
         "status": "ok",
         "frames": len(files),
-        "output_dir": output_dir
+        "output_dir": output_dir,
+        "chunk_size": chunk_size
     }

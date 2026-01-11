@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <title>图像标注</title>
+  <title>Image Segmentation</title>
   <link rel="stylesheet" href="../styles.css" />
 </head>
 
@@ -25,18 +25,18 @@
 
     <span style="opacity:0.4;">|</span>
 
-    <button class="tool-btn active" id="btnCursor">🖱️ 选择</button>
-    <button class="tool-btn" id="btnPolygon">⬢ 多边形</button>
-    <button class="tool-btn" id="btnHighlight">🔍 查漏</button>
+    <button class="tool-btn active" id="btnCursor">🖱️ Mask Selection</button>
+    <button class="tool-btn" id="btnPolygon">⬢ Polygen</button>
+    <button class="tool-btn" id="btnHighlight">🔍 Check</button>
 
-    <span style="margin-left:auto;" id="currentFileName">加载中...</span>
+    <span style="margin-left:auto;" id="currentFileName">Loading...</span>
   </div>
 
 
   <!-- ================= 顶部工具栏 ================= -->
   <div class="toolbar" style="margin-bottom:16px;">
-    <button class="btn" onclick="nav('/')">← 返回</button>
-    <span id="currentFileName" style="margin-left:16px;">加载中...</span>
+    <button class="btn" onclick="nav('/')">← Back</button>
+    <span id="currentFileName" style="margin-left:16px;">Loading...</span>
     <button class="tool-btn" id="btnSaveNext">💾 Save & Next</button>
   </div>
 
@@ -75,14 +75,14 @@
       />
 
       <!-- SAM / Polygon 共用绘制层（左侧暂只用于点击） -->
-      <canvas
+      <!-- <canvas
         id="draw-polygon"
         style="
           position:absolute;
           top:0; left:0;
           pointer-events:auto;
         "
-      ></canvas>
+      ></canvas> -->
     </div>
 
     <!-- ================= 右侧：Polygon 精修 ================= -->
@@ -127,7 +127,7 @@
     "
   >
     <div style="margin-top:20px;">
-      <h4>🧪 标注结果预览</h4>
+      <h4>🧪 Result Preview</h4>
       <img
         id="samResultImage"
         style="
@@ -140,7 +140,7 @@
     </div>
 
     <div style="margin-top:20px;">
-      <h4>🧪 标注结果预览</h4>
+      <h4>🧪 Result Preview</h4>
       <img
         id="polygonResultImage"
         style="
@@ -174,7 +174,7 @@
     class="label-panel-title"
     style="font-weight:bold; margin-bottom:8px;"
   >
-    🧩 已标注
+    🧩 Annotated
   </div>
   <ul
     id="labelList"

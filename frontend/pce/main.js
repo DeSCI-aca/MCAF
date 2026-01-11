@@ -28,15 +28,15 @@ let colorMode = "category";
 let categoryArr = null;
 let instanceArr = null;
 let metaData = null;
-let raycaster = new THREE.Raycaster();
+//let raycaster = new THREE.Raycaster();
 let mouseNDC = new THREE.Vector2();
 let selectedMask = null;   // Uint8Array, 0/1
-let outputDirHandle = null;
+//let outputDirHandle = null;
 let instanceBoxes = []; // THREE.Mesh[]
 
 let activeBox = null;
 let editMode = null; // "move" | "rotate" | "resize"
-let dragStartPoint = new THREE.Vector3();
+//let dragStartPoint = new THREE.Vector3();
 let dragStartYaw = 0;
 
 // ===== box edit temp state =====
@@ -53,16 +53,27 @@ let resizeStartCenter = { x: 0, y: 0, z: 0 };
 let resizeStartLocalHit = new THREE.Vector3();
 
 let visibilityMask = null;  // 1=显示, 0=隐藏
-let currentFilter = { cat: null, inst: null }; // 当前选择
+//let currentFilter = { cat: null, inst: null }; // 当前选择
 
 let metaFileHandle = null; // 🔑 关键
 
-// ===== Category Mapping =====
-let classNameToId = {};   // name -> id
-let classIdToName = {};   // id -> name
+let metaDirHandle = null;     // 文件夹句柄
+let metaFiles = [];          // FileSystemFileHandle[]
+let metaIndex = 0;           // 当前帧索引
+
+let boxDirHandle = null;          // FileSystemDirectoryHandle
+let boxFiles = [];               // FileSystemFileHandle[]
+let boxIndex = 0;                // 当前 box 帧
+
+// =======================
+// Class Config
+// =======================
+let classNameToId = {};
+let classIdToName = {};
+
 
 const boxRaycaster = new THREE.Raycaster();
-const arrowRaycaster = new THREE.Raycaster();
+//const arrowRaycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 
 const MOVE_STEP = 0.2;    // XY 平移步长（米）
@@ -72,10 +83,13 @@ const ROTATE_STEP = 2 * Math.PI / 180; // 每次旋转 2°
 /* =======================
    Init
 ======================= */
-init();
-animate();
+(async () => {
+  await init();   // 等 controls / scene 全部就绪
+  animate();      // 再启动渲染循环
+})();
 
-function init() {
+
+async function init() {
 
   ui.pcdFile = document.getElementById("pcdFile");
   //ui.metaFile = document.getElementById("metaFile");
@@ -138,7 +152,7 @@ function init() {
   //setupRectangleSelect();
   setupLassoSelect();
   document.getElementById("apply").addEventListener("click", applySelected);
-  document.getElementById("saveMeta").addEventListener("click", saveMetaNPY);
+  //document.getElementById("saveMeta").addEventListener("click", saveMetaNPY);
   document.getElementById("genBox").addEventListener("click", generateInstanceBoxes);
   document.getElementById("delBox").addEventListener("click", deleteAllBoxes);
   //renderer.domElement.addEventListener("mousedown", onPickBoxFace);
@@ -148,7 +162,6 @@ function init() {
   window.addEventListener("mousemove", onEditMouseMove);
   window.addEventListener("mouseup", onEditMouseUp);
 
-  document.getElementById("exportKitti").addEventListener("click", exportBoxesToKitti);
   window.addEventListener("keydown", onBoxKeyDown);
   window.addEventListener("keydown", onKeyDown);
 
@@ -168,18 +181,72 @@ function init() {
   }
 
   document.getElementById("openMeta").onclick = async () => {
-    const [handle] = await window.showOpenFilePicker({
-      types: [{
-        description: "Meta NPY",
-        accept: { "application/octet-stream": [".npy"] }
-      }]
-    });
+    // 1️⃣ 选择文件夹
+    metaDirHandle = await window.showDirectoryPicker();
   
-    metaFileHandle = handle;           // 🔑 记住这个文件
-    const file = await handle.getFile();
+    metaFiles = [];
+    metaIndex = 0;
   
-    await onLoadMetaFromFile(file);    // 🔥 直接显示
-  }; 
+    // 2️⃣ 收集所有 .npy 文件
+    for await (const [name, handle] of metaDirHandle.entries()) {
+      if (handle.kind === "file" && name.toLowerCase().endsWith(".npy")) {
+        metaFiles.push(handle);
+      }
+    }
+  
+    if (metaFiles.length === 0) {
+      alert("No .npy files found in folder");
+      return;
+    }
+  
+    // 3️⃣ 排序（非常关键！）
+    metaFiles.sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { numeric: true })
+    );
+  
+    console.log(
+      "Found npy files:",
+      metaFiles.map(f => f.name)
+    );
+  
+    // 4️⃣ 加载第一个
+    await loadMetaByIndex(0);
+  };
+
+  document.getElementById("openBoxDir").onclick = async () => {
+    if (!Object.keys(classNameToId).length) {
+      alert("Please load class mapping first");
+      return;
+    }
+    boxDirHandle = await window.showDirectoryPicker();
+  
+    boxFiles = [];
+    boxIndex = 0;
+  
+    for await (const [name, handle] of boxDirHandle.entries()) {
+      if (handle.kind === "file" && name.toLowerCase().endsWith(".txt")) {
+        boxFiles.push(handle);
+      }
+    }
+  
+    if (boxFiles.length === 0) {
+      alert("No KITTI .txt box files found");
+      return;
+    }
+  
+    // ⚠️ 数字排序非常关键
+    boxFiles.sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { numeric: true })
+    );
+  
+    console.log(
+      "📦 Found box files:",
+      boxFiles.map(f => f.name)
+    );
+  
+    await loadBoxByIndex(0);
+  };
+
   document.getElementById("openClassJson").onclick = async () => {
     const [handle] = await window.showOpenFilePicker({
       types: [{
@@ -211,6 +278,93 @@ function init() {
   console.log("init ok");
 }
 
+async function loadMetaByIndex(idx) {
+  if (!metaFiles.length) return;
+  if (idx < 0 || idx >= metaFiles.length) return;
+
+  metaIndex = idx;
+
+  const handle = metaFiles[metaIndex];
+  metaFileHandle = handle;   // 🔑 用于 saveMetaNPY 覆盖写回
+
+  const file = await handle.getFile();
+
+  console.log(
+    `📂 Loading frame ${metaIndex + 1}/${metaFiles.length}:`,
+    handle.name
+  );
+
+  await onLoadMetaFromFile(file);
+
+  // UI 提示（可选）
+  ui.stats.innerHTML += `<br/><b>Frame:</b> ${handle.name}`;
+}
+
+document.getElementById("nextFrame").onclick = async () => {
+  if (!metaFiles.length) {
+    alert("No meta folder loaded");
+    return;
+  }
+
+  // 🚨 已是最后一帧
+  if (metaIndex >= metaFiles.length - 1) {
+    alert("Already last frame");
+    return;
+  }
+
+  // =========================
+  // 1️⃣ 保存当前帧
+  // =========================
+  try {
+    // 保存 meta.npy
+    await saveMetaNPY();
+
+    // 保存 box.txt（如果有）
+    if (boxFiles.length) {
+      await saveBoxTXT();
+    }
+
+    console.log("✅ Frame saved:", metaIndex);
+  } catch (e) {
+    console.error("❌ Save failed:", e);
+    alert("Save failed, not moving to next frame");
+    return;
+  }
+
+  // =========================
+  // 2️⃣ 跳到下一帧
+  // =========================
+  const nextIdx = metaIndex + 1;
+  await loadMetaByIndex(nextIdx);
+
+  if (boxFiles.length) {
+    await loadBoxByMetaIndex(nextIdx);
+  }
+};
+
+
+document.getElementById("prevFrame").onclick = async () => {
+  if (!metaFiles.length) {
+    alert("No meta folder loaded");
+    return;
+  }
+
+  if (metaIndex <= 0) {
+    alert("Already first frame");
+    return;
+  }
+
+  const prevIdx = metaIndex - 1;
+
+  // 1️⃣ 加载上一帧 meta
+  await loadMetaByIndex(prevIdx);
+
+  // 2️⃣ 同步加载上一帧 box
+  if (boxFiles.length) {
+    await loadBoxByMetaIndex(prevIdx);
+  }
+};
+
 function onResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
@@ -226,13 +380,14 @@ function animate() {
 async function onLoadMetaFromFile(file) {
   const { data, shape } = await loadNPY(file);
 
-  if (shape.length !== 2 || shape[1] !== 9) {
-    throw new Error("meta.npy must have shape (N, 9)");
+  console.log("✅ Meta loaded:", shape[1]);
+
+  if (shape.length !== 2 || shape[1] !== 8) {
+    throw new Error("meta.npy must have shape (N, 8)");
   }
 
   const N = shape[0];
   metaData = data;
-
   // ===== 解析 =====
   const positions = new Float32Array(N * 3);
   rgbArr = new Uint8Array(N * 3);
@@ -240,7 +395,7 @@ async function onLoadMetaFromFile(file) {
   instanceArr = new Uint16Array(N);
 
   for (let i = 0; i < N; i++) {
-    const b = i * 9;
+    const b = i * 8;
 
     positions[i*3+0] = data[b+0];
     positions[i*3+1] = data[b+1];
@@ -269,7 +424,6 @@ async function onLoadMetaFromFile(file) {
 
   console.log("✅ Meta loaded:", N);
 }
-
 
 /* =======================
    NPY Loader (browser)
@@ -616,38 +770,26 @@ function onCtrlPickPoint(e) {
 }
 
 function showPointInfo(i) {
-  console.log("DEBUG ui.pointInfo =", ui.pointInfo);
+  const b = i * 8;
 
-  if (!ui.pointInfo) {
-    console.error("pointInfo is missing. Check HTML id=pointInfo and init order.");
-    return;
-  }
-  const b = i * 9;
-
-  const frame = metaData[b + 6];
-  const cat = metaData[b + 7];
-  const inst = metaData[b + 8];
+  const cat = metaData[b + 3];
+  const inst = metaData[b + 4];
 
   ui.pointInfo.innerHTML = `
     <b>Point Info</b><br/>
     <b>Index:</b> ${i}<br/>
-    <b>Frame:</b> ${frame}<br/>
     <b>Category:</b> ${cat}<br/>
     <b>Instance:</b> ${inst}
   `;
-  console.log("inst:", inst);
-
-  // 可选：高亮该点
-  colorAttr.array[i * 3 + 0] = 0.0;
-  colorAttr.array[i * 3 + 1] = 1.0;
-  colorAttr.array[i * 3 + 2] = 1.0;
-  colorAttr.needsUpdate = true;
 }
+
 
 function applySelected() {
   if (!selectedMask || !categoryArr || !instanceArr) return;
 
-  const newCat = parseInt(document.getElementById("category").value, 10) | 0;
+  const catName = document.getElementById("category").value;
+  const newCat = classNameToId[catName] ?? 0;
+
   const newInst = parseInt(document.getElementById("instance").value, 10) | 0;
 
   let changed = 0;
@@ -669,33 +811,12 @@ function applySelected() {
 
 
 function syncMetaDataFromArrays() {
-  if (!metaData || !categoryArr || !instanceArr) return;
-
   const N = categoryArr.length;
-
   for (let i = 0; i < N; i++) {
-    const b = i * 9;
-
-    // ✅ 写回到真正的 cat / inst 列
+    const b = i * 8;
     metaData[b + 3] = categoryArr[i];
     metaData[b + 4] = instanceArr[i];
   }
-}
-
-async function openMetaNPY() {
-  const [handle] = await window.showOpenFilePicker({
-    types: [
-      {
-        description: "NPY file",
-        accept: { "application/octet-stream": [".npy"] }
-      }
-    ]
-  });
-
-  metaFileHandle = handle; // 🔴 保存句柄（写权限来源）
-
-  const file = await handle.getFile();
-  await onLoadMetaFile(file); // 你现有的 onLoadMeta 内容
 }
 
 async function saveMetaNPY() {
@@ -706,8 +827,8 @@ async function saveMetaNPY() {
 
   syncMetaDataFromArrays();
 
-  const N = metaData.length / 9;
-  const buffer = buildNPYBuffer(metaData, [N, 9], "<f8");
+  const N = metaData.length / 8;
+  const buffer = buildNPYBuffer(metaData, [N, 8], "<f8");  
 
   const writable = await metaFileHandle.createWritable();
   await writable.write(buffer);
@@ -799,7 +920,6 @@ function collectPointsByCategoryInstance() {
 
   return map;
 }
-
 
 function computeYawFromXY(points) {
   let mx = 0, my = 0;
@@ -985,8 +1105,7 @@ function showBoxInfo(box) {
 
   ui.pointInfo.innerHTML = `
     <b>Box Info</b><br/>
-    <b>Category:</b> ${d.cat}
-    (${classIdToName[d.cat] ?? "unknown"})<br/>
+    <b>Category:</b> ${d.cat}<br/>
     <b>Instance:</b> ${d.inst}<br/><br/>
 
     <b>Center (LiDAR)</b><br/>
@@ -1308,6 +1427,9 @@ function syncMeshFromUserData(mesh) {
   // rebuild geometry with exact dx/dy/dz
   if (mesh.geometry) mesh.geometry.dispose();
   mesh.geometry = new THREE.BoxGeometry(ud.size.dx, ud.size.dy, ud.size.dz);
+  if (mesh.userData.arrow) {
+    updateYawArrow(mesh);
+  }  
 }
 
 function normalizeAngle(a) {
@@ -1316,14 +1438,11 @@ function normalizeAngle(a) {
   return a;
 }
 
-function kittiTypeFromCat(cat) {
-  if (!classIdToName || classIdToName[cat] == null) {
-    return "Unknown";
+function catIdToKittiName(cat) {
+  if (cat in classIdToName) {
+    return classIdToName[cat];
   }
-
-  // KITTI 通常首字母大写，可选
-  const name = classIdToName[cat];
-  return name.charAt(0).toUpperCase() + name.slice(1);
+  return "unlabeled";
 }
 
 
@@ -1333,55 +1452,22 @@ function boxToKittiLine(mesh) {
 
   const { center, size, yaw, cat } = d;
 
-  const type = kittiTypeFromCat(cat);
+  const type = catIdToKittiName(cat); // ✅ 从 config 反查
 
   const x = center.x;
   const y = center.y;
-  const z = center.z - size.dz * 0.5; // ⚠️ 底中心
-
-  const l = size.dx;
-  const w = size.dy;
-  const h = size.dz;
+  const z = center.z - size.dz * 0.5;
 
   return [
     type,
     x.toFixed(3),
     y.toFixed(3),
     z.toFixed(3),
-    l.toFixed(3),
-    w.toFixed(3),
-    h.toFixed(3),
+    size.dx.toFixed(3),
+    size.dy.toFixed(3),
+    size.dz.toFixed(3),
     yaw.toFixed(6),
   ].join(" ");
-}
-
-function exportBoxesToKitti() {
-  if (!instanceBoxes.length) {
-    alert("No boxes to export");
-    return;
-  }
-
-  const lines = [];
-
-  for (const mesh of instanceBoxes) {
-    const line = boxToKittiLine(mesh);
-    if (line) lines.push(line);
-  }
-
-  const content = lines.join("\n");
-  const blob = new Blob([content], { type: "text/plain" });
-  const url = URL.createObjectURL(blob);
-
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "000000.txt"; // KITTI 风格
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-
-  URL.revokeObjectURL(url);
-
-  console.log("Exported KITTI labels:", lines.length);
 }
 
 function onBoxKeyDown(e) {
@@ -1704,4 +1790,163 @@ function buildPointCloudFromArrays(positions, N) {
 
   pointsObj = new THREE.Points(geom, mat);
   scene.add(pointsObj);
+}
+
+async function loadBoxByIndex(idx) {
+  if (!boxFiles.length) return;
+  if (idx < 0 || idx >= boxFiles.length) return;
+
+  boxIndex = idx;
+
+  const handle = boxFiles[boxIndex];
+  const file = await handle.getFile();
+  const text = await file.text();
+
+  console.log(
+    `📦 Loading box frame ${boxIndex + 1}/${boxFiles.length}:`,
+    handle.name
+  );
+
+  // 清掉旧 box
+  deleteAllBoxes();
+
+  // 解析 + 生成 box
+  const boxes = parseKittiBoxes(text);
+
+  for (const box of boxes) {
+    const mesh = createBoxMeshFromKitti(box);
+    scene.add(mesh);
+    instanceBoxes.push(mesh);
+
+    // 箭头
+    createYawArrow(mesh);
+  }
+
+  ui.stats.innerHTML += `<br/><b>Box:</b> ${handle.name}`;
+}
+
+function parseKittiBoxes(text) {
+  const boxes = [];
+
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 8) continue;
+
+    const [
+      type,
+      x, y, z,
+      l, w, h,
+      yaw
+    ] = parts;
+
+    boxes.push({
+      type,
+      center: {
+        x: parseFloat(x),
+        y: parseFloat(y),
+        z: parseFloat(z) + parseFloat(h) * 0.5,
+      },
+      size: {
+        dx: parseFloat(l),
+        dy: parseFloat(w),
+        dz: parseFloat(h),
+      },
+      yaw: parseFloat(yaw),
+      cat: kittiNameToCatId(type), // ✅ 改这里
+      inst: 0,
+    });
+  }
+
+  return boxes;
+}
+
+
+function kittiNameToCatId(type) {
+  if (!type) return 0;
+
+  const key = type.toLowerCase(); // Car -> car
+  if (key in classNameToId) {
+    return classNameToId[key];
+  }
+
+  console.warn("Unknown KITTI class:", type);
+  return classNameToId["unlabeled"] ?? 0;
+}
+
+
+function createBoxMeshFromKitti(box) {
+  const geom = new THREE.BoxGeometry(
+    box.size.dx,
+    box.size.dy,
+    box.size.dz
+  );
+
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x00ffff,
+    wireframe: true,
+  });
+
+  const mesh = new THREE.Mesh(geom, mat);
+
+  mesh.position.set(
+    box.center.x,
+    box.center.y,
+    box.center.z
+  );
+
+  mesh.rotation.set(0, 0, box.yaw);
+
+  // 🔑 userData 必须完整，与你编辑系统兼容
+  mesh.userData = {
+    cat: box.cat,
+    inst: box.inst,
+    center: { ...box.center },
+    size: { ...box.size },
+    yaw: box.yaw,
+  };
+
+  return mesh;
+}
+
+async function loadBoxByMetaIndex(metaIdx) {
+  if (!boxFiles.length) return;
+
+  // 情况 A：box 和 meta 一一对应（99%）
+  if (metaIdx < boxFiles.length) {
+    await loadBoxByIndex(metaIdx);
+    return;
+  }
+
+  // 情况 B：box 比 meta 少（兜底）
+  console.warn("⚠️ No box file for meta frame:", metaIdx);
+  deleteAllBoxes();
+}
+
+async function saveBoxTXT() {
+  if (!boxFiles.length) return;
+
+  // 当前 metaIndex 对应的 box
+  if (metaIndex >= boxFiles.length) {
+    console.warn("No box file to save for frame", metaIndex);
+    return;
+  }
+
+  const handle = boxFiles[metaIndex];
+  // 生成 KITTI 文本
+  const lines = [];
+  for (const mesh of instanceBoxes) {
+    const line = boxToKittiLine(mesh);
+    if (line) lines.push(line);
+  }
+
+  const content = lines.join("\n");
+
+  // 🔥 覆盖写回原文件
+  const writable = await handle.createWritable();
+  await writable.write(content);
+  await writable.close();
+
+  console.log("💾 Box saved:", handle.name);
 }

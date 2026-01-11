@@ -11,13 +11,15 @@ from PIL import Image, ImageDraw
 def run_panoptic_to_pointcloud(
     panoptic_dir,
     lidar_dir,
+    image_dir,
     output_dir,
     K,
     T_LIDAR_TO_CAM,
     width,
     height,
     category_base_colors,
-    thing_class_ids
+    thing_class_ids,
+    is_kitti
 ):
     os.makedirs(output_dir, exist_ok=True)
 
@@ -31,6 +33,11 @@ def run_panoptic_to_pointcloud(
 
     def extract_timestamp(name):
         m = re.match(r"(\d+\.\d+)_gtFine_panoptic\.json", name)
+        return m.group(1) if m else None
+
+    def extract_timestamp_kitti(name):
+        # 修改点：将 (\d+\.\d+) 改为 (\d+)，以匹配纯数字文件名
+        m = re.match(r"(\d+)_gtFine_panoptic\.json", name)
         return m.group(1) if m else None
 
     def normalize_polygon(poly):
@@ -71,7 +78,10 @@ def run_panoptic_to_pointcloud(
     )
 
     for fname in json_files:
-        ts = extract_timestamp(fname)
+        if is_kitti:
+            ts = extract_timestamp_kitti(fname)
+        else:
+            ts = extract_timestamp(fname)
         if ts is None:
             continue
 
@@ -112,6 +122,19 @@ def run_panoptic_to_pointcloud(
         # 示例：1920x1080
         H, W = height, width
 
+        # ---------- 读原始图像 ----------
+        img_path = os.path.join(image_dir, f"{ts}.jpg")
+        if not os.path.exists(img_path):
+            img_path = os.path.join(image_dir, f"{ts}.png")
+
+        if not os.path.exists(img_path):
+            print(f"[Skip RGB] missing image for {ts}")
+            img = None
+        else:
+            img = np.array(Image.open(img_path).convert("RGB"))
+            img_h, img_w, _ = img.shape
+
+
         # ---------- 遍历每个 segment ----------
         for seg in pano["segments_info"]:
             class_id = int(seg["class_id"])
@@ -138,17 +161,36 @@ def run_panoptic_to_pointcloud(
                     point_cat[i_img] = class_id
                     point_inst[i_img] = instance_id
                     colors[i_img] = panoptic_color(class_id, instance_id)
+        if img is not None:
+            for i_img, uu, vv in zip(valid_idx, u, v):
+                if 0 <= uu < img_w and 0 <= vv < img_h:
+                    colors[i_img] = img[vv, uu]
+
 
         # ---------- 保存 ----------
-        label_data = np.hstack([
+        # label_data = np.hstack([
+        #     points,
+        #     point_cat[:,None],
+        #     point_inst[:,None]
+        # ])
+
+        #np.save(os.path.join(output_dir, f"{ts}_labels.npy"), label_data)
+
+        #pcd.colors = o3d.utility.Vector3dVector(colors / 255.0)
+        # o3d.visualization.draw_geometries([pcd])
+
+        #color_dir = os.path.join(output_dir, "..", "pointcloud_segmentation_with_color")
+        #os.makedirs(color_dir, exist_ok=True)
+
+        rgb_data = np.hstack([
             points,
             point_cat[:,None],
-            point_inst[:,None]
+            point_inst[:,None],
+            colors.astype(np.uint8)
         ])
 
-        np.save(os.path.join(output_dir, f"{ts}_labels.npy"), label_data)
-
-        pcd.colors = o3d.utility.Vector3dVector(colors / 255.0)
-        # o3d.visualization.draw_geometries([pcd])
+        np.save(os.path.join(output_dir, f"{ts}_labels.npy"), rgb_data)
+        #pcd.colors = o3d.utility.Vector3dVector(rgb_colors / 255.0)
+        #o3d.visualization.draw_geometries([pcd])
 
     return {"status": "ok", "frames": len(json_files)}

@@ -10,22 +10,6 @@ import torch
 from utils.save import polygons_to_mask
 import json
 
-CLASS_NAME_TO_ID = {
-    "sky": 1, "road": 2, "massif": 3, "rut": 4, "curb": 5, "brushwood": 6,
-    "mining_truck": 7, "mollisoil": 8, "gravel": 9, "puddle": 10,
-    "electric_shovel": 11, "road test equipment": 12, "engineering vehicle": 13,
-    "pushdozer": 14, "truck": 15, "car": 16, "mound": 17, "vegetation": 18,
-    "blocking_stone": 19, "excavator": 20, "constrcution": 21, "traffic cone": 22,
-    "fence": 23, "road_sign": 24, "cabel": 25, "conmunication pole": 26,
-    "telegraph pole": 27, "watering car": 28, "oil truck": 29, "human": 30,
-    "wide_body_truck": 31, "bus": 32
-}
-
-THING_CLASSES = {
-    "mining_truck", "electric_shovel", "engineering vehicle", "pushdozer", "truck",
-    "car", "excavator", "traffic cone", "bus", "oil truck", "watering car", "wide_body_truck", "human"
-}
-
 def get_mask_center_and_area(mask):
     labeled = label(mask)
     props = regionprops(labeled)
@@ -200,10 +184,10 @@ def extract_masks_from_label_json(json_path, height, width):
 
     return masks, classes
 
-def apply_labels_to_image(attr_masks, sam_masks, attr_classes):
+def apply_labels_to_image(attr_masks, sam_masks, attr_classes, CLASS_NAME_TO_ID):
     output_masks = []
     matched_indices = match_masks(attr_masks, sam_masks)
-    print("matched_indices:", matched_indices)
+    #print("matched_indices:", matched_indices)
 
     mask_class_attrs = {}
     output_idx = []

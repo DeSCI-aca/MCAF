@@ -66,44 +66,48 @@ async function renderDashboard() {
     document.getElementById("app").innerHTML = `
         <div class="dashboard">
             <header class="header-banner">
-                <h1>标注平台架构 V1.0</h1>
-                <div class="path-badge">${state.project_path || '未选择数据源'}</div>
+                <h1>MCAF: A Multi-task Closed-loop Annotation Framework for Autonomous Driving v1.0</h1>
+                <div class="path-badge">${state.project_path || 'Please select a data source'}</div>
             </header>
             <div class="task-grid">
                 <div class="card" onclick="nav('/import')">
-                    <h3>📂 数据导入</h3>
-                    <p>校验并配置项目根目录</p>
+                    <h3>📂 Data Import</h3>
+                    <p>Validate and configure project root directory</p>
                 </div>
                 <div class="card ${!state.project_path ? 'disabled' : ''}" onclick="nav('/image')">
-                    <h3>🖼️ 图像分割</h3>
-                    <p>支持 2D 语义分割与实例分割</p>
+                    <h3>🖼️ Image Segmentation</h3>
+                    <p>Support 2D semantic/instance/panoptic sengentation</p>
                 </div>
                 <div
                   class="card ${!state.project_path ? 'disabled' : ''}"
                   onclick="runTrackingExport()"
                 >
-                    <h3>🎯 2D Tracking 导出</h3>
-                    <p>从 panoptic 结果生成 Tracking COCO</p>
+                    <h3>🎯 2D Tracking Output</h3>
+                    <p>Transfer the panoptic results to COCO tracking format</p>
                 </div>
                 <div 
                   class="card ${!state.project_path ? 'disabled' : ''}"
                   onclick="runPointCloudSeg()"
                 >
-                    <h3>☁️ 生成点云分割</h3>
-                    <p>支持 3D 目标检测与语义标注</p>
+                    <h3>☁️ Point segmentation Output</h3>
+                    <p>Support 3D point segmentation/object detection</p>
                 </div>
                 <div class="card" onclick="runLidarOdometry()">
-                  <h3>🧭 里程计生成</h3>
-                  <p>基于语义点云进行 LiDAR Odometry</p>
+                  <h3>🧭 Odometry Generation</h3>
+                  <p>Generate LiDAR odometry results based on point segmentaion</p>
                 </div>
                 <div class="card" onclick="location.href='/pages/pc.html'">
-                  <h3>🛠 点云分割修正</h3>
-                  <p>人工修正点云语义 / 实例 / 3D 框</p>
+                  <h3>🛠 Point Segmentation Revision</h3>
+                  <p>Revise the group point segmentation/instances/bounding boxes</p>
                 </div>
                 <div class="card ${!state.project_path ? 'disabled' : ''}"
                     onclick="runPointcloudReproject()">
-                  <h3>🔁 点云回投 / 框还原</h3>
-                  <p>将最后一帧标注还原到所有帧</p>
+                  <h3>🔁 Point Segmentation/3D boxes one-by-one</h3>
+                  <p>Apply labels from the last frame to all previous frames</p>
+                </div>
+                <div class="card" onclick="location.href='/pages/pce.html'">
+                  <h3>🛠 Each Point Seg & 3D Box Revision</h3>
+                  <p>Revise the each point segmentation/bounding boxes</p>
                 </div>
             </div>
         </div>
@@ -131,10 +135,10 @@ function bindImportEvents() {
       
       const data = await res.json();
       if (res.ok) {
-          result.innerHTML = `<div class="badge done">✓ 导入成功: ${data.path}</div>`;
+          result.innerHTML = `<div class="badge done">✓ Import Successfully: ${data.path}</div>`;
           setTimeout(() => nav("/"), 1500); // 成功后 1.5 秒自动回首页
       } else {
-          result.innerHTML = `<div class="badge error">✘ 错误: ${data.detail}</div>`;
+          result.innerHTML = `<div class="badge error">✘ Error: ${data.detail}</div>`;
       }
   };
 }
@@ -192,6 +196,16 @@ async function bindImageAnnotationEvents() {
     setMode("polygon");
   };
 
+  // document.addEventListener("click", e => {
+  //   console.log(
+  //     "GLOBAL CLICK:",
+  //     e.target,
+  //     "id=", e.target.id,
+  //     "class=", e.target.className
+  //   );
+  // });
+  
+
   // ===== 1️⃣ 绑定点击事件（查 mask）=====
   baseImage.addEventListener("click", async (e) => {
       const rect = baseImage.getBoundingClientRect();
@@ -201,6 +215,7 @@ async function bindImageAnnotationEvents() {
       const y = Math.floor(
         (e.clientY - rect.top) * baseImage.naturalHeight / rect.height
       );
+      //console.log("GLOBAL CLICK:", e.target.id || e.target);
     
       // ===============================
       // 🖱️ 选择模式 → 查 SAM mask
@@ -238,7 +253,7 @@ async function bindImageAnnotationEvents() {
 
     const data = await res.json();
 
-    fileNameEl.textContent = `当前文件: ${data.filename}`;
+    fileNameEl.textContent = `Current File: ${data.filename}`;
     baseImage.src = `data:image/png;base64,${data.ori_image}`;
     segOverlay.src = `data:image/png;base64,${data.seg_image}`;
     if (polygonImage) {
@@ -252,7 +267,7 @@ async function bindImageAnnotationEvents() {
     }
   } catch (err) {
     console.error(err);
-    alert("加载失败，请检查后端日志和权重路径");
+    alert("Loading failed. Please check backend logs and weight paths.");
   }
 
   btnPolygon.onclick = () => {
@@ -273,9 +288,12 @@ async function bindImageAnnotationEvents() {
 
     const data = await res.json();
     if (!res.ok) {
-      alert(data.detail || "保存失败");
+      alert(data.detail || "Save Failure!");
       return;
     }
+    
+    fileNameEl.textContent = `Current File: ${data.filename}`;
+
     document.getElementById("baseImage").src =
       "data:image/png;base64," + data.ori_image;
 

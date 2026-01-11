@@ -1,73 +1,111 @@
-# backend/scripts/pointcloud_reproject.py
-import numpy as np
 import os
+import numpy as np
 import json
 
 def run_pointcloud_reproject(project_path):
-    base = os.path.join(project_path)
-
-    poses = np.load(os.path.join(base, "lidar_odometry/lidar_poses.npy"))
-    boxes_last = load_kitti_boxes(
-        os.path.join(base, "lidar_odometry/000000.txt")
+    chunks_dir = os.path.join(
+        project_path,
+        "lidar_odometry",
+        "chunks"
     )
 
-    # ---------- 1. 生成每帧 box ----------
-    out_box_dir = os.path.join(base, "DDD_boxes")
+    out_pc_dir = os.path.join(
+        project_path,
+        "pointcloud_segmentation"
+    )
+    out_box_dir = os.path.join(
+        project_path,
+        "DDD_boxes"
+    )
+
+    os.makedirs(out_pc_dir, exist_ok=True)
     os.makedirs(out_box_dir, exist_ok=True)
 
-    all_boxes = generate_boxes_per_frame(boxes_last, poses)
-    for i, boxes_i in enumerate(all_boxes):
-        save_kitti_boxes(
-            boxes_i,
-            os.path.join(out_box_dir, f"frame_{i:06d}.txt")
+    chunk_dirs = sorted(
+        d for d in os.listdir(chunks_dir)
+        if d.startswith("chunk_")
+    )
+
+    global_frame_offset = 0
+
+    for chunk_name in chunk_dirs:
+        print(f"[Chunk] {chunk_name}")
+
+        chunk_path = os.path.join(chunks_dir, chunk_name)
+
+        poses = np.load(os.path.join(chunk_path, "lidar_poses.npy"))
+        boxes_last = load_kitti_boxes(
+            os.path.join(chunk_path, "000000.txt")
         )
 
-    # ---------- 2. 还原点云并写 JSON ----------
-    global_npy = os.path.join(base, "lidar_odometry/global_map_with_meta.npy")
-    out_pc_dir = os.path.join(base, "pointcloud_segmentation_revised")
-    os.makedirs(out_pc_dir, exist_ok=True)
+        data = np.load(
+            os.path.join(chunk_path, "global_map_with_meta.npy")
+        )
 
-    data = np.load(global_npy)
-    xyz = data[:, :3]
-    frame_ids = data[:, 6].astype(int)
-    cat = data[:, 7].astype(int)
-    inst = data[:, 8].astype(int)
+        xyz_last = data[:, :3]
+        #cat = data[:, 3].astype(int)
+        #inst = data[:, 4].astype(int)
+        #frame_ids = data[:, 8].astype(int)  # chunk 内 frame id
+        cat = data[:, 3]
+        inst = data[:, 4]
+        color = data[:, 5:8]
+        frame_ids = data[:, 8] # chunk 内 frame id
 
-    T_last = poses[-1]
-    num_frames = poses.shape[0]
+        num_frames = poses.shape[0]
 
-    for i in range(num_frames):
-        mask = frame_ids == i
-        if not mask.any():
-            continue
+        # ---------- 每一帧 ----------
+        for i in range(num_frames):
+            mask = frame_ids == i
+            if not mask.any():
+                continue
 
-        pts_last = xyz[mask]
-        pts_h = np.hstack([pts_last, np.ones((len(pts_last), 1))])
+            pts_last = xyz_last[mask]
+            pts_h = np.hstack([pts_last, np.ones((len(pts_last), 1))])
 
-        T = np.linalg.inv(poses[i]) @ T_last
-        pts_i = (T @ pts_h.T).T[:, :3]
+            # chunk_last -> frame_i
+            T = np.linalg.inv(poses[i])
+            pts_i = (T @ pts_h.T).T[:, :3]
 
-        out = {
-            "xyz": pts_i.tolist(),
-            "cat": cat[mask].tolist(),
-            "inst": inst[mask].tolist()
-        }
+            labels = np.hstack([
+                pts_i,
+                cat[mask, None],
+                inst[mask, None],
+                color[mask]
+            ])
 
-        with open(
-            os.path.join(out_pc_dir, f"frame_{i:03d}.json"),
-            "w"
-        ) as f:
-            json.dump(out, f)
+            frame_idx = global_frame_offset + i
+            np.save(
+                os.path.join(
+                    out_pc_dir,
+                    f"{frame_idx:010d}_labels.npy"
+                ),
+                labels
+            )
+
+        # ---------- boxes ----------
+        for i in range(num_frames):
+            T = np.linalg.inv(poses[i])
+            boxes_i = [transform_box(b, T) for b in boxes_last]
+
+            frame_idx = global_frame_offset + i
+            save_kitti_boxes(
+                boxes_i,
+                os.path.join(
+                    out_box_dir,
+                    f"frame_{frame_idx:06d}.txt"
+                )
+            )
+
+        global_frame_offset += num_frames
 
     return {
-        "boxes_dir": out_box_dir,
-        "points_dir": out_pc_dir,
-        "frames": num_frames
+        "status": "ok",
+        "frames": global_frame_offset
     }
 
 
 # ======================
-# 以下：你原来的函数，原封不动
+# 复用函数（与你原来一致）
 # ======================
 def load_kitti_boxes(txt_path):
     boxes = []
@@ -76,19 +114,22 @@ def load_kitti_boxes(txt_path):
             parts = line.strip().split()
             if len(parts) < 8:
                 continue
-            _, x, y, z, l, w, h, yaw = parts
+            cate, x, y, z, l, w, h, yaw = parts
             boxes.append({
+                "category": cate,
                 "center": np.array([float(x), float(y), float(z)]),
                 "size": (float(l), float(w), float(h)),
                 "yaw": float(yaw)
             })
     return boxes
 
+
 def transform_box(box, T):
+    cate = box["category"]
     c_h = np.hstack([box["center"], 1.0])
     c_new = (T @ c_h)[:3]
-    R = T[:3, :3]
 
+    R = T[:3, :3]
     dir_vec = np.array([
         np.cos(box["yaw"]),
         np.sin(box["yaw"]),
@@ -98,28 +139,21 @@ def transform_box(box, T):
     yaw_new = np.arctan2(dir_new[1], dir_new[0])
 
     return {
+        "category": cate,
         "center": c_new,
         "size": box["size"],
         "yaw": yaw_new
     }
 
-def box_last_to_frame_i(box, poses, i):
-    T = np.linalg.inv(poses[i]) @ poses[-1]
-    return transform_box(box, T)
-
-def generate_boxes_per_frame(boxes_last, poses):
-    return [
-        [box_last_to_frame_i(b, poses, i) for b in boxes_last]
-        for i in range(len(poses))
-    ]
 
 def save_kitti_boxes(boxes, path):
     with open(path, "w") as f:
         for b in boxes:
+            cate = b["category"]
             x, y, z = b["center"]
             l, w, h = b["size"]
             yaw = b["yaw"]
             f.write(
-                f"Unknown {x:.3f} {y:.3f} {z:.3f} "
+                f"{cate} {x:.3f} {y:.3f} {z:.3f} "
                 f"{l:.3f} {w:.3f} {h:.3f} {yaw:.6f}\n"
             )

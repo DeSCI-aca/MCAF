@@ -526,7 +526,7 @@ class ImageTaskCore:
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
-    def match_prev_panoptic_to_current_sam(self, prev_instance_label):
+    def match_prev_panoptic_to_current_sam(self, prev_instance_label, CLASS_NAME_TO_ID):
         """
         使用你原来的 apply_labels_to_image，
         把上一帧 panoptic label 匹配到当前帧 SAM masks
@@ -553,7 +553,8 @@ class ImageTaskCore:
         label_img, mask_class_attrs, output_idx, output_masks = apply_labels_to_image(
             attr_masks,
             self.current_masks_np,
-            attr_classes
+            attr_classes,
+            CLASS_NAME_TO_ID
         )
 
         return {

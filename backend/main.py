@@ -39,7 +39,9 @@ GLOBAL_STATE = {
     "current_image_name": None,
     "current_image_index": None,
     "image_files": [],
-    "category_base_colors": None
+    "category_base_colors": None,
+    "is_kitti": False,
+    "chunks_number":None
 }
 
 class PathRequest(BaseModel):
@@ -59,8 +61,7 @@ def import_path(req: PathRequest):
     details = {
         "lidar": (base / "lidar").is_dir(),
         "image": (base / "image").is_dir(),
-        "config": (base / "config.json").is_file(),
-        "calib": (base / "calibration.txt").is_file()
+        "config": (base / "config.json").is_file()
     }
 
     if not all(details.values()):
@@ -83,6 +84,8 @@ def import_path(req: PathRequest):
     GLOBAL_STATE["class_name_to_id"] = config["class_name_to_id"]
     GLOBAL_STATE["thing_classes"] = set(config["thing_classes"])
     GLOBAL_STATE["sam_model"] = config.get("SAM_model")
+    GLOBAL_STATE["is_kitti"] = config.get("IS_KITTI")
+    GLOBAL_STATE["chunks_number"] = config.get("CHUNKS_NUMBER")
 
     cfg = GLOBAL_STATE["config"]
 
@@ -124,6 +127,7 @@ def get_context():
     return GLOBAL_STATE
 
 image_task_core = ImageTaskCore(GLOBAL_STATE)
+#image_task_core = None
 
 @app.get("/api/image/init-first")
 async def init_first_image():
@@ -167,35 +171,6 @@ def query_mask(data: dict):
         "current_class": image_task_core.mask_id_to_class.get(mask_id),
         "class_options": list(GLOBAL_STATE["class_name_to_id"].keys())
     }
-
-
-# @app.post("/api/image/set-mask-class")
-# def set_mask_class(payload: dict = Body(...)):
-#     mask_id = int(payload["mask_id"])
-#     class_name = payload["class_name"]
-#     class_id = GLOBAL_STATE["class_name_to_id"][class_name]
-
-#     image_task_core.mask_id_to_class[mask_id] = class_name
-
-#     is_thing = class_name in GLOBAL_STATE["thing_classes"]
-
-#     overlay = image_task_core.render_overlay()  # 可选：不带 instance 的预览
-
-#     if not is_thing:
-#         return {
-#             "overlay_image": image_task_core.pil_to_base64(overlay),
-#             "class_id": class_id,
-#             "need_instance": False
-#         }
-
-#     existing = image_task_core.class_to_instances.get(class_name, [])
-
-#     return {
-#         "need_instance": True,
-#         "class_id": class_id,
-#         "existing_instances": existing,   # 👈 这里现在一定不是 None
-#         "overlay_image": image_task_core.pil_to_base64(overlay)
-#     }
 
 @app.post("/api/image/set-mask-class")
 def set_mask_class(payload: dict = Body(...)):
@@ -352,7 +327,7 @@ def save_and_next():
     labels = []
 
     # ===== 6️⃣ SAM thing tracking（你已有）=====
-    matched_thing = core.match_prev_panoptic_to_current_sam(prev_thing_label)
+    matched_thing = core.match_prev_panoptic_to_current_sam(prev_thing_label, GLOBAL_STATE["class_name_to_id"])
     if matched_thing:
         for k, v in matched_thing["mask_class_attrs"].items():
             if isinstance(k, int):
@@ -368,6 +343,7 @@ def save_and_next():
                     if instance_id not in core.class_to_instances[class_name]:
                         core.class_to_instances[class_name].append(instance_id)
                         core.class_to_instances[class_name].sort()
+                    #print(class_name)
 
                     labels.append({
                         "mask_id": sam_idx,
@@ -528,9 +504,11 @@ def save_tracking(payload: dict):
 def run_pointcloud_segmentation():
     project_path = Path(GLOBAL_STATE["project_path"])
     cfg = GLOBAL_STATE["config"]
+    IS_KITTI = GLOBAL_STATE["is_kitti"]
 
     panoptic_dir = project_path / "panoptic"
     lidar_dir = project_path / "lidar"
+    image_dir = project_path / "image"
     output_dir = project_path / "pointcloud_segmentation"
 
     # ===== 从 config 读取相机参数 =====
@@ -558,13 +536,15 @@ def run_pointcloud_segmentation():
     return run_panoptic_to_pointcloud(
         panoptic_dir=str(panoptic_dir),
         lidar_dir=str(lidar_dir),
+        image_dir=str(image_dir),
         output_dir=str(output_dir),
         K=K,
         T_LIDAR_TO_CAM=T,
         width=width,                 # ✅ 新增
         height=height,               # ✅ 新增
         category_base_colors=category_base_colors,
-        thing_class_ids=thing_class_ids
+        thing_class_ids=thing_class_ids,
+        is_kitti=IS_KITTI
     )
 
 @app.post("/api/pointcloud/odometry")
@@ -586,10 +566,19 @@ def run_lidar_odometry_api():
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    cfg = GLOBAL_STATE["config"]
+    cam_cfg = cfg["camera"]
+    K = np.array(cam_cfg["K"], dtype=np.float32)
+    T = np.array(cam_cfg["T_LIDAR_TO_CAM"], dtype=np.float32)
+
     result = run_lidar_odometry(
         npy_dir=str(npy_dir),
         output_dir=str(output_dir),
-        max_frames=None   # 或限制前 N 帧调试
+        image_dir = project_path / "image",
+        K = K,
+        T = T,
+        max_frames = None,
+        chunk_size = GLOBAL_STATE["chunks_number"],
     )
 
     return result

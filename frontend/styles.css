@@ -111,7 +111,7 @@ button {
 
 /* ================== 图像区域 ================== */
 .annotation-container {
-    margin-left: 90px; /* 给左侧工具栏让位 */
+    margin-left: 90px; /* 给左侧工具栏让位90/16 */
     padding: 16px;
 }
 
@@ -141,11 +141,11 @@ button {
 }
 
 /* 交互层 */
-#draw-polygon {
+/* #draw-polygon {
     position: absolute;
     inset: 0;
     pointer-events: auto;
-}
+} */
 
 /* ================== 下方结果图 ================== */
 #samResultImage {
